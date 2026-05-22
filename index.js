@@ -3,6 +3,7 @@ const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const FOOD_API_URL = 'https://sinamon.dothome.co.kr/food/?json';
 const MELON_API_URL = 'https://sinamon.dothome.co.kr/melon/';
 const KOREA_TIMEZONE = 'Asia/Seoul';
+const MENU_SEND_HOURS = [7, 11, 17];
 
 // 봇 클라이언트 초기화
 const client = new Client({
@@ -28,6 +29,64 @@ function getTodayMenuKey() {
     }
 
     return `${month}.${day}`;
+}
+
+function getKoreaDateTimeParts(date = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: KOREA_TIMEZONE,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+    }).formatToParts(date);
+
+    const getPart = (type) => parts.find((part) => part.type === type)?.value;
+
+    const year = Number(getPart('year'));
+    const month = Number(getPart('month'));
+    const day = Number(getPart('day'));
+    const hour = Number(getPart('hour'));
+    const minute = Number(getPart('minute'));
+    const second = Number(getPart('second'));
+
+    if ([year, month, day, hour, minute, second].some(Number.isNaN)) {
+        throw new Error('한국 시간 정보를 계산할 수 없습니다.');
+    }
+
+    return { year, month, day, hour, minute, second };
+}
+
+function getNextMenuSendDelay(now = new Date()) {
+    const koreaNow = getKoreaDateTimeParts(now);
+    const currentTotalSeconds = (koreaNow.hour * 60 * 60) + (koreaNow.minute * 60) + koreaNow.second;
+
+    for (const hour of MENU_SEND_HOURS) {
+        const targetTotalSeconds = hour * 60 * 60;
+
+        if (currentTotalSeconds < targetTotalSeconds) {
+            return (targetTotalSeconds - currentTotalSeconds) * 1000;
+        }
+    }
+
+    const tomorrowFirstSendSeconds = (24 * 60 * 60) - currentTotalSeconds + (MENU_SEND_HOURS[0] * 60 * 60);
+    return tomorrowFirstSendSeconds * 1000;
+}
+
+function formatNextMenuSendTime(now = new Date()) {
+    const nextSendAt = new Date(now.getTime() + getNextMenuSendDelay(now));
+
+    return new Intl.DateTimeFormat('ko-KR', {
+        timeZone: KOREA_TIMEZONE,
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+    }).format(nextSendAt);
 }
 
 // 식단 데이터를 가져오는 함수
@@ -120,16 +179,28 @@ async function sendTodayMenuToChannel() {
     console.log(`오늘 식단을 채널(${channelId})에 전송했습니다.`);
 }
 
+function scheduleNextMenuSend() {
+    const delay = getNextMenuSendDelay();
+    const nextSendTime = formatNextMenuSendTime();
+
+    console.log(`다음 식단 자동 전송 예약: ${nextSendTime} (${KOREA_TIMEZONE})`);
+
+    setTimeout(async () => {
+        try {
+            await sendTodayMenuToChannel();
+        } catch (error) {
+            console.error('예약된 식단 전송 오류:', error);
+        } finally {
+            scheduleNextMenuSend();
+        }
+    }, delay);
+}
+
 // 봇이 준비되었을 때 실행
-client.once('ready', async () => {
+client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}!`);
     console.log('봇이 온라인 상태입니다.');
-
-    try {
-        await sendTodayMenuToChannel();
-    } catch (error) {
-        console.error('자동 식단 전송 오류:', error);
-    }
+    scheduleNextMenuSend();
 });
 
 // 메시지 수신 시 실행
